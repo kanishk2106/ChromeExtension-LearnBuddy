@@ -1,0 +1,128 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>ActionSense Dashboard</title>
+  <style>
+    :root {
+      font-family: 'Inter', system-ui, sans-serif;
+      color-scheme: light dark;
+      background: #f5f7fb;
+      color: #1c1f26;
+    }
+    body {
+      margin: 0;
+      padding: 32px;
+      background: inherit;
+      color: inherit;
+    }
+    h1 {
+      margin-top: 0;
+    }
+    section {
+      background: #fff;
+      border-radius: 12px;
+      padding: 18px;
+      margin-bottom: 20px;
+      box-shadow: 0 12px 22px rgba(15, 23, 42, 0.08);
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    th, td {
+      text-align: left;
+      padding: 8px;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.3);
+    }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      padding: 4px 8px;
+      border-radius: 9999px;
+      font-size: 12px;
+      background: #e0e7ff;
+      color: #3730a3;
+    }
+
+    .focus-progress {
+      margin-top: 12px;
+      margin-bottom: 12px;
+    }
+
+    .progress-bar {
+      position: relative;
+      height: 10px;
+      background: rgba(79, 70, 229, 0.15);
+      border-radius: 999px;
+      overflow: hidden;
+      margin-bottom: 8px;
+    }
+
+    .progress-bar span {
+      display: block;
+      height: 100%;
+      width: 0;
+      background: linear-gradient(135deg, #4c6ef5, #3bc9db);
+      transition: width 0.4s ease;
+    }
+
+    #focus-breakdown,
+    #focus-trend,
+    #focus-streak {
+      margin: 4px 0;
+    }
+
+    .pulse {
+      animation: pulse 1.2s ease;
+    }
+
+    @keyframes pulse {
+      0% { box-shadow: 0 0 0 0 rgba(76, 110, 245, 0.45); }
+      100% { box-shadow: 0 0 0 12px rgba(76, 110, 245, 0); }
+    }
+  </style>
+</head>
+<body>
+  <h1>ActionSense Dashboard</h1>
+  <p>Insights from your recent browsing activity.</p>
+
+  <section>
+    <h2>Category Breakdown</h2>
+    <table id="category-table">
+      <thead>
+        <tr>
+          <th>Category</th>
+          <th>Visits</th>
+          <th>Focus</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Focus Coach</h2>
+    <div class="focus-progress">
+      <div class="progress-bar"><span id="focus-bar"></span></div>
+      <p id="focus-breakdown">🧠 Focus 0% | 🎮 Distraction 0%</p>
+      <p id="focus-trend"></p>
+      <p id="focus-streak"></p>
+    </div>
+    <p id="focus-summary">Keep up the momentum 💪</p>
+    <button id="coach-ai-btn" style="margin-top: 12px; padding: 8px 16px; background: #4c6ef5; color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 14px;">✨ Get AI Coach Summary</button>
+  </section>
+
+  <section>
+    <h2>Recent Highlights</h2>
+    <ul id="history"></ul>
+  </section>
+
+  <section>
+    <h2>Latest Captures</h2>
+    <ul id="pages"></ul>
+  </section>
+
+  <script type="module" src="dashboard.js"></script>
+</body>
+</html>

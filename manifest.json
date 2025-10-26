@@ -1,0 +1,44 @@
+{
+  "manifest_version": 3,
+  "name": "ActionSense \u2014 AI Tab Assistant",
+  "version": "0.2.0",
+  "description": "Understands browsing context, suggests next steps, and keeps you focused.",
+  "permissions": [
+    "tabs",
+    "tabGroups",
+    "scripting",
+    "activeTab",
+    "storage",
+    "notifications",
+    "tts",
+    "alarms",
+    "aiLanguageModel"
+  ],
+  "host_permissions": [
+    "<all_urls>",
+    "https://your-proxy.example.com/*"
+  ],
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "ActionSense"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "options_page": "options/dashboard.html",
+  "icons": {
+    "128": "icons/icon128.png"
+  }
+}
