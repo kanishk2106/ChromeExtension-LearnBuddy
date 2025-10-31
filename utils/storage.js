@@ -129,16 +129,17 @@ export async function getDashboardData() {
     getFocusStats()
   ]);
 
-  // Build browsing history with one-liners for productivity coaching
+  // Build browsing history with one-liners and signals for productivity coaching
   const browsingHistory = Object.values(pages || {})
-    .filter(page => page.oneLiner && page.category) // Only pages with one-liners
+    .filter(page => page.category) // Only pages with categories
     .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)) // Most recent first
     .slice(0, 10) // Last 10 activities
     .map(page => ({
-      activity: page.oneLiner,
+      activity: page.oneLiner || page.title || 'Unknown activity',
       category: page.category,
       url: page.url,
-      timestamp: page.updatedAt
+      timestamp: page.updatedAt,
+      signals: page.signals || null  // Include extracted signals (action items, due dates, etc.)
     }));
 
   return {

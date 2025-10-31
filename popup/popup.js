@@ -963,6 +963,7 @@ async function maybeEnhanceWithAI(tabId, snapshot, options = {}) {
         title: snapshot.title,
         text: textSource,
         category: finalCategory,
+        signals: snapshot.signals || {},
         tabId
       });
     }

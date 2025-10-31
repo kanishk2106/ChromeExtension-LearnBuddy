@@ -8,6 +8,20 @@
   let pending = null;
   let lastHash = '';
 
+  // Track user clicks on interactive elements
+  let clickedElements = new Set();
+  let clickedActionItems = [];
+
+  // Safe message sender that guards against extension context invalidation
+  const safeSendMessage = (message) => {
+    if (!chrome.runtime?.id) return Promise.resolve();
+    return chrome.runtime.sendMessage(message).catch((err) => {
+      // Suppress expected "Extension context invalidated" errors
+      if (err?.message?.includes('Extension context invalidated')) return;
+      console.warn('sendMessage error:', err);
+    });
+  };
+
   const debounceSend = () => {
     if (pending) return;
     pending = setTimeout(async () => {
@@ -25,7 +39,8 @@
       if (JSON.stringify(lastPayload) === JSON.stringify(payload)) return;
       lastPayload = { ...payload };
       lastHash = textHash;
-      chrome.runtime.sendMessage({ type: 'PAGE_INFO', data: payload }).catch(() => {});
+
+      safeSendMessage({ type: 'PAGE_INFO', data: payload });
     }, 400);
   };
 
@@ -47,11 +62,48 @@
   });
 
   const sendVisibility = () => {
-    chrome.runtime.sendMessage({ type: 'VISIBILITY', visible: !document.hidden }).catch(() => {});
+    safeSendMessage({ type: 'VISIBILITY', visible: !document.hidden });
   };
 
   document.addEventListener('visibilitychange', sendVisibility);
   sendVisibility();
+
+  // Track clicks on interactive elements
+  document.addEventListener('click', (event) => {
+    const target = event.target;
+    if (!target) return;
+
+    // Find the closest interactive element
+    const interactive = target.closest('button, a[href], input[type="button"], input[type="submit"], [role="button"]');
+    if (!interactive) return;
+
+    // Get text content
+    const text = (interactive.textContent || interactive.value || interactive.getAttribute('aria-label') || '').trim();
+    if (!text || text.length > 200) return;
+
+    // Check if this is an action item
+    const ACTION_VERBS = ['buy', 'add', 'cart', 'checkout', 'purchase', 'order', 'enroll', 'register', 'signup', 'sign up', 'join', 'submit', 'send', 'post', 'download', 'install', 'get', 'apply', 'book', 'schedule', 'pay', 'start', 'continue', 'subscribe', 'login', 'log in', 'sign in'];
+    const lowerText = text.toLowerCase();
+    const matchedVerb = ACTION_VERBS.find(verb => lowerText.includes(verb));
+
+    if (matchedVerb) {
+      // Store clicked action item
+      clickedActionItems.push({
+        text: text.slice(0, 100),
+        verb: matchedVerb,
+        timestamp: Date.now(),
+        url: location.href
+      });
+
+      // Keep only last 20 clicked items
+      if (clickedActionItems.length > 20) {
+        clickedActionItems = clickedActionItems.slice(-20);
+      }
+
+      // Debounce sending update
+      debounceSend();
+    }
+  }, { passive: true });
 
   async function buildPagePayload() {
     try {
@@ -64,7 +116,12 @@
       const price = products[0]?.price || null;
       const rating = products[0]?.rating || null;
 
+      // Extract structured signals
+      const signals = extractAllSignals();
+
       const language = document.documentElement.getAttribute('lang') || navigator.language || 'en';
+
+      // Build structured payload with enhanced data
       return {
         title,
         url,
@@ -75,6 +132,16 @@
         price,
         rating,
         language,
+        // New structured signals
+        signals: {
+          products: signals.products || [],
+          actionItems: signals.actionItems || [],
+          dueDates: signals.dueDates || [],
+          searchIntent: signals.searchIntent || null,
+          taskPlatform: signals.taskPlatform || null,
+          // Add clicked action items
+          clickedActionItems: clickedActionItems.slice()
+        },
         timestamp: Date.now()
       };
     } catch (err) {
@@ -285,6 +352,8 @@
       price: offerObj?.price || offerObj?.priceSpecification?.price || '',
       currency: offerObj?.priceCurrency || offerObj?.priceSpecification?.priceCurrency || '',
       rating: product?.aggregateRating?.ratingValue || '',
+      reviewCount: product?.aggregateRating?.reviewCount || product?.aggregateRating?.ratingCount || '',
+      availability: offerObj?.availability || '',
       link: absoluteUrl(product?.url || offerObj?.url || location.href)
     };
   }
@@ -309,14 +378,22 @@
       const titleEl = card.querySelector('h2 a span, h2, h3, a[aria-label], a[title], a[href]');
       const priceEl = card.querySelector('[class*="price"], .a-price .a-offscreen, .a-price-whole, .money, [aria-label*="$"], [aria-label*="₹"], [aria-label*="€"]');
       const ratingEl = card.querySelector('.a-icon-alt, [class*="rating"], [aria-label*="out of 5"]');
+      const reviewCountEl = card.querySelector('[class*="review"], [aria-label*="rating"], span[aria-label*="stars"]');
       const linkEl = titleEl?.closest('a');
       const title = (titleEl?.getAttribute('aria-label') || titleEl?.getAttribute('title') || titleEl?.textContent || '').trim();
       if (!title) return;
+
+      // Extract review count from text like "1,234 ratings" or "45 reviews"
+      const reviewText = reviewCountEl?.textContent || reviewCountEl?.getAttribute('aria-label') || '';
+      const reviewMatch = reviewText.match(/(\d+(?:,\d+)*)\s*(?:rating|review|star)/i);
+      const reviewCount = reviewMatch ? reviewMatch[1].replace(/,/g, '') : '';
+
       items.push({
         title,
         price: (priceEl?.textContent || '').trim(),
         currency: '',
         rating: (ratingEl?.textContent || '').trim(),
+        reviewCount: reviewCount,
         link: absoluteUrl(linkEl?.href || '')
       });
     });
@@ -334,4 +411,116 @@
   const STOPWORDS = new Set([
     'with','your','from','this','that','have','what','when','where','they','them','then','will','into','about','which','there','their','been','also','more','than','best','most','some','many','such','only','other','after','before','into','over','under','while','using','each','just','very','here','home','page','https','http','www'
   ]);
+
+  // ========== STRUCTURED SIGNAL EXTRACTION ==========
+
+  const ACTION_VERBS = ['buy', 'add', 'cart', 'checkout', 'purchase', 'order', 'enroll', 'register', 'signup', 'sign up', 'join', 'submit', 'send', 'post', 'download', 'install', 'get', 'apply', 'book', 'schedule', 'pay', 'start', 'continue', 'subscribe', 'login', 'log in', 'sign in'];
+  const DUE_DATE_KEYWORDS = ['due', 'deadline', 'submit by', 'closes', 'expires', 'available until'];
+  const TASK_PLATFORMS = { canvas: ['instructure.com', 'canvas'], gradescope: ['gradescope.com'], github: ['github.com', 'issues'], jira: ['atlassian.net', 'jira'] };
+  const SEARCH_PARAMS = ['q', 'query', 'search', 'k', 's'];
+
+  function extractAllSignals() {
+    return {
+      actionItems: extractActionItems(),
+      dueDates: extractDueDates(),
+      searchIntent: extractSearchIntent(),
+      taskPlatform: detectTaskPlatform()
+    };
+  }
+
+  function extractActionItems() {
+    const actions = [];
+    const seen = new Set();
+    const buttons = document.querySelectorAll('button, input[type="button"], input[type="submit"], [role="button"], a[href]');
+
+    for (const btn of buttons) {
+      if (!isVisible(btn)) continue;
+      const text = (btn.textContent || btn.value || btn.getAttribute('aria-label') || '').trim().toLowerCase();
+      if (!text || text.length > 100) continue;
+
+      for (const verb of ACTION_VERBS) {
+        if (text.includes(verb)) {
+          const actionText = (btn.textContent || btn.value || btn.getAttribute('aria-label') || '').trim();
+          if (actionText && !seen.has(actionText)) {
+            actions.push({ text: actionText.slice(0, 80), verb });
+            seen.add(actionText);
+            break;
+          }
+        }
+      }
+      if (actions.length >= 15) break;
+    }
+    return actions;
+  }
+
+  function extractDueDates() {
+    const dueDates = [];
+    const seen = new Set();
+    const datePatterns = [
+      /\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+\d{1,2},?\s+\d{4}\b/gi,
+      /\b\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}\b/g,
+      /\b(?:today|tomorrow|next\s+(?:week|month|monday|tuesday|wednesday|thursday|friday))\b/gi
+    ];
+
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    while (walker.nextNode()) {
+      const parent = walker.currentNode.parentElement;
+      if (!parent || !isVisible(parent) || HIDDEN.has(parent.tagName)) continue;
+
+      const text = walker.currentNode.textContent;
+      if (!text || text.length < 5) continue;
+
+      const lowerText = text.toLowerCase();
+      let hasDueKeyword = false;
+      for (const keyword of DUE_DATE_KEYWORDS) {
+        if (lowerText.includes(keyword)) {
+          hasDueKeyword = true;
+          break;
+        }
+      }
+      if (!hasDueKeyword) continue;
+
+      for (const pattern of datePatterns) {
+        const matches = [...text.matchAll(pattern)];
+        for (const match of matches) {
+          const date = match[0];
+          if (!seen.has(date)) {
+            const context = text.slice(Math.max(0, match.index - 40), Math.min(text.length, match.index + date.length + 40)).trim();
+            dueDates.push({ date, context });
+            seen.add(date);
+          }
+        }
+      }
+      if (dueDates.length >= 10) break;
+    }
+    return dueDates;
+  }
+
+  function extractSearchIntent() {
+    const url = new URL(window.location.href);
+    for (const param of SEARCH_PARAMS) {
+      const value = url.searchParams.get(param);
+      if (value) return { query: decodeURIComponent(value), source: 'url' };
+    }
+
+    const searchBox = document.querySelector('input[type="search"], input[name="q"]');
+    if (searchBox?.value) return { query: searchBox.value, source: 'input' };
+
+    return null;
+  }
+
+  function detectTaskPlatform() {
+    const url = window.location.href.toLowerCase();
+    const title = document.title.toLowerCase();
+
+    for (const [platform, indicators] of Object.entries(TASK_PLATFORMS)) {
+      let matches = 0;
+      for (const indicator of indicators) {
+        if (url.includes(indicator) || title.includes(indicator)) matches++;
+      }
+      if (matches >= 1) return { platform, confidence: matches / indicators.length };
+    }
+    return null;
+  }
+
 })();

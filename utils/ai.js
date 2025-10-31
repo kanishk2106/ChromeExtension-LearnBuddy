@@ -6,7 +6,9 @@ import {
   actionsSystemPrompt,
   productAdvisorPrompt,
   focusCoachPrompt,
-  oneLinerPrompt
+  studyCoachPrompt,
+  oneLinerPrompt,
+  PERSONA_STRICT
 } from './ai_prompts.js';
 
 let summarizerSession = null;
@@ -35,6 +37,71 @@ async function runQueued(label, fn, context = {}) {
 export function resetAISessions() {
   summarizerSession?.destroy?.();
   summarizerSession = null;
+}
+
+// Compute top N sites from browsingHistory
+export function topSitesFromHistory(browsingHistory = [], n = 3) {
+  const counts = new Map();
+  for (const p of browsingHistory || []) {
+    try {
+      const host = new URL(p.url).hostname.replace(/^www\./, '');
+      counts.set(host, (counts.get(host) || 0) + 1);
+    } catch {}
+  }
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, n)
+    .map(([h]) => h);
+}
+
+// Sanitize activities string
+function cleanActivitiesString(s = '') {
+  return String(s).replace(/\.+/g, '.').trim();
+}
+
+// Build study user prompt from activities + top sites
+export function buildStudyUserPrompt({ formattedActivities = '', topSites = [] } = {}) {
+  const top = (topSites && topSites.length) ? topSites.join(', ') : 'unknown, unknown, unknown';
+  return [
+    `Activities: ${cleanActivitiesString(formattedActivities)}`,
+    `TopSites: ${top}`,
+    '',
+    'Render EXACTLY in the specified format (one heading + exactly 6 bullets). No preface.'
+  ].join('\n');
+}
+
+// Fallback builder to produce formattedActivities (same style used elsewhere)
+function buildFormattedActivitiesFromHistory(browsingHistory = []) {
+  const activities = [];
+  for (const page of (browsingHistory || []).slice(0, 6)) {
+    if (page?.activity) activities.push(page.activity);
+  }
+  if (!activities.length) return '**No recent activity.**';
+  return activities.map(a => `**${String(a).replace(/\s+$/, '')}.**`).join('; ');
+}
+
+export async function generateStudySummary(context = {}) {
+  if (typeof LanguageModel === 'undefined') {
+    throw new Error('Chrome AI (LanguageModel API) is not available. Please use Chrome 127+ or enable chrome://flags/#prompt-api-for-gemini-nano');
+  }
+  const topSites = topSitesFromHistory(context?.browsingHistory || [], 3);
+  const formattedActivities = context?.formattedActivities || buildFormattedActivitiesFromHistory(context?.browsingHistory || []);
+  const userPrompt = buildStudyUserPrompt({ formattedActivities, topSites });
+
+  const session = await LanguageModel.create({
+    systemPrompt: `${PERSONA_STRICT}\n\n${studyCoachPrompt()}`,
+    temperature: 0.1,
+    topK: 1,
+    maxOutputTokens: 400,
+    expectedInputs: [{ type: 'text', languages: ['en'] }],
+    expectedOutputs: [{ type: 'text', languages: ['en'] }]
+  });
+  try {
+    const out = await session.prompt(userPrompt);
+    return (out || '').trim();
+  } finally {
+    try { session.destroy?.(); } catch {}
+  }
 }
 
 export async function summarizeWithAI(text, {
@@ -304,7 +371,7 @@ export async function analyzeProductValue(candidates = [], context = {}, { tabId
   }
 }
 
-export async function generateOneLiner({ title = '', text = '', category = 'other', tabId } = {}) {
+export async function generateOneLiner({ title = '', text = '', category = 'other', signals = {}, tabId } = {}) {
   if (typeof LanguageModel === 'undefined') return null;
   if (!text || !text.trim()) return null;
 
@@ -324,14 +391,46 @@ export async function generateOneLiner({ title = '', text = '', category = 'othe
         expectedInputs: [{ type: "text", languages: ["en"] }],
         expectedOutputs: [{ type: "text", languages: ["en"] }]
       });
-      const prompt = [
+
+      // Build structured context from signals
+      const contextParts = [
         title ? `Page: ${title}` : '',
-        `Category: ${categoryLabel(category)}`,
-        'Content snippet:',
-        text.slice(0, 500),
-        '',
-        'One-liner:'
-      ].filter(Boolean).join('\n');
+        `Category: ${categoryLabel(category)}`
+      ];
+
+      // Add structured signals
+      if (signals) {
+        if (signals.searchIntent) {
+          contextParts.push(`Search: "${signals.searchIntent.query}"`);
+        }
+        if (signals.actionItems?.length > 0) {
+          const topActions = signals.actionItems.slice(0, 5).map(a => a.text).join(', ');
+          contextParts.push(`Actions: ${topActions}`);
+        }
+        if (signals.dueDates?.length > 0) {
+          const firstDue = signals.dueDates[0];
+          contextParts.push(`Due: ${firstDue.date} (${firstDue.context.slice(0, 50)})`);
+        }
+        if (signals.taskPlatform) {
+          contextParts.push(`Platform: ${signals.taskPlatform.platform}`);
+        }
+        if (signals.products?.length > 0) {
+          const product = signals.products[0];
+          contextParts.push(`Product: ${product.title?.slice(0, 50)} ${product.price ? `$${product.price}` : ''}`);
+        }
+      }
+
+      // Fallback to text snippet if no signals
+      if (!signals || Object.keys(signals).length === 0) {
+        contextParts.push('Content snippet:', text.slice(0, 500));
+      } else {
+        // Include minimal text for context
+        contextParts.push('Context:', text.slice(0, 200));
+      }
+
+      contextParts.push('', 'One-liner:');
+
+      const prompt = contextParts.filter(Boolean).join('\n');
       const result = (await session.prompt(prompt))?.trim();
       session.destroy?.();
       // Clean up quotes if AI adds them
@@ -344,44 +443,272 @@ export async function generateOneLiner({ title = '', text = '', category = 'othe
 }
 
 export async function generateFocusCoachSummary(analytics = {}, context = {}, { tabId } = {}) {
-  if (typeof LanguageModel === 'undefined') return null;
-  try {
-    return await runQueued('generateFocusCoachSummary', async () => {
-      const availability = await LanguageModel.availability({
-        expectedInputs: [{ type: "text", languages: ["en"] }],
-        expectedOutputs: [{ type: "text", languages: ["en"] }]
-      });
-      if (availability === 'no') return null;
-      // User activation checked at entry point (button click), safe to create session in queue
-      const session = await LanguageModel.create({
-        systemPrompt: focusCoachPrompt(),
-        temperature: 0.6,
-        topK: 5,
-        maxOutputTokens: 300,
-        expectedInputs: [{ type: "text", languages: ["en"] }],
-        expectedOutputs: [{ type: "text", languages: ["en"] }]
-      });
-      const prompt = [
-        'Browsing analytics (category -> visit count):',
-        JSON.stringify(analytics, null, 2),
-        '',
-        'Recent browsing history with activities:',
-        JSON.stringify(context.browsingHistory || [], null, 2),
-        '',
-        'Weekly focus metrics:',
-        JSON.stringify(context.focusStats || {}, null, 2),
-        '',
-        'Provide coaching summary:'
-      ].join('\n');
-      const result = (await session.prompt(prompt))?.trim();
-      session.destroy?.();
-      return result || null;
-    }, { tabId });
-  } catch (err) {
-    console.error('AI failure generateFocusCoachSummary', err, { tabId });
-    return null;
+  if (typeof LanguageModel === 'undefined') {
+    throw new Error('Chrome AI (LanguageModel API) is not available. Please use Chrome 127+ or enable chrome://flags/#prompt-api-for-gemini-nano');
   }
+
+  const startTime = Date.now();
+  return await runQueued('generateFocusCoachSummary', async () => {
+    console.log('[AI] Starting at', Date.now() - startTime, 'ms');
+    console.log('[AI] Checking availability...');
+
+    // Check availability with timeout (specify language to avoid warning)
+    const availability = await Promise.race([
+      LanguageModel.availability({
+        expectedInputs: [{ type: "text", languages: ["en"] }],
+        expectedOutputs: [{ type: "text", languages: ["en"] }]
+      }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Availability check timeout')), 5000))
+    ]);
+
+    console.log('[AI] Availability status:', availability, 'at', Date.now() - startTime, 'ms');
+
+    if (availability === 'no') {
+      throw new Error('Chrome AI is not available on this device. Make sure you have Chrome 127+ and sufficient RAM (8GB+).');
+    }
+
+    if (availability === 'after-download') {
+      throw new Error('Chrome AI model is downloading. Please wait a few minutes and try again. Check chrome://components');
+    }
+
+    console.log('[AI] Creating session...');
+
+    // Choose study-focused prompt if analytics indicate learning category is active
+    const topCatsPre = Object.entries(analytics || {})
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3);
+    const isStudyMode = topCatsPre.some(([cat]) => normalizeCategory(cat) === 'learning');
+    const system = [PERSONA_STRICT, isStudyMode ? studyCoachPrompt() : focusCoachPrompt()].join('\n\n');
+
+    // Create session with timeout - this is where it often hangs
+    const sessionPromise = LanguageModel.create({
+      systemPrompt: system,
+      temperature: 0.1,  // Very low temperature for consistent format following
+      topK: 1,           // Greedy sampling for deterministic output
+      maxOutputTokens: 512,  // Allow longer, detailed responses
+      expectedInputs: [{ type: "text", languages: ["en"] }],
+      expectedOutputs: [{ type: "text", languages: ["en"] }]  // Fix warning: specify output language
+    });
+
+    const session = await Promise.race([
+      sessionPromise,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Session creation timeout - AI model may be initializing. Try again in 30 seconds.')), 15000))
+    ]);
+
+    console.log('[AI] Session created ✓');
+
+    try {
+      // Build action-oriented prompt with browsing signals
+      const topCategories = Object.entries(analytics || {})
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 3);
+
+      const focusStats = context.focusStats || {};
+      const focusPct = Math.round(focusStats.focusPct || 0);
+
+      // Check if we have enough data
+      const hasData = topCategories.length > 0 || (context.browsingHistory || []).length > 0;
+
+      if (!hasData) {
+        // No browsing data yet - return a helpful message
+        console.log('[AI] No browsing data available yet');
+        return 'Start browsing to get personalized action items! Open some tabs, visit sites related to your work or studies, and check back here for AI-powered recommendations.';
+      }
+
+      // Extract actionable signals from browsing history
+      const recentPages = (context.browsingHistory || []).slice(0, 5);
+      const actionItems = [];
+      const clickedItems = [];
+      const dueDates = [];
+      const activities = [];
+      const products = [];
+
+      // Collect signals and activities
+      for (const page of recentPages) {
+        // Add activity description
+        if (page.activity) {
+          activities.push(page.activity);
+        }
+
+        if (page.signals) {
+          // PRIORITIZE: Add clicked action items (user actually interacted with these)
+          if (page.signals.clickedActionItems && page.signals.clickedActionItems.length > 0) {
+            clickedItems.push(...page.signals.clickedActionItems.slice(0, 3).map(a => ({
+              text: a.text,
+              url: page.url || a.url,
+              timestamp: a.timestamp
+            })));
+          }
+          // Add action items (only if no clicked items)
+          else if (page.signals.actionItems && page.signals.actionItems.length > 0) {
+            actionItems.push(...page.signals.actionItems.slice(0, 2).map(a => a.text));
+          }
+          // Add due dates
+          if (page.signals.dueDates && page.signals.dueDates.length > 0) {
+            dueDates.push(...page.signals.dueDates.slice(0, 1).map(d => `${d.date}: ${d.context.slice(0, 40)}`));
+          }
+          // Add product data for comparison
+          if (page.signals.products && page.signals.products.length > 0) {
+            products.push(...page.signals.products.slice(0, 3).map(p => ({
+              title: p.title,
+              price: p.price,
+              currency: p.currency,
+              originalPrice: p.originalPrice ?? p.listPrice ?? null,
+              promoEnds: p.promoEnds ?? p.saleEnds ?? null,
+              shipping: p.shipping ?? (p.freeShipping ? 'free shipping' : null),
+              membership: p.membership ?? null,
+              financing: p.financing ?? p.apr ?? null,
+              rating: p.rating,
+              reviewCount: p.reviewCount,
+              availability: p.availability,
+              source: new URL(page.url).hostname
+            })));
+          }
+        }
+      }
+
+      // Build activities in the format: Activities: **<activity 1>**; **<activity 2>**; ...
+      const activitiesList = [];
+
+      // Add product comparison data as activities
+      if (products.length > 0) {
+        products.forEach(p => {
+          const parts = [];
+
+          // Build activity string
+          parts.push(p.title || 'Product');
+          parts.push(`at ${p.source}`);
+
+          // Price with original price if available
+          if (p.price) {
+            parts.push(`priced at ${p.currency || '$'}${p.price}`);
+            if (p.originalPrice && p.price < p.originalPrice) {
+              parts.push(`(was ${p.currency || '$'}${p.originalPrice})`);
+            }
+          }
+
+          // Shipping
+          if (p.shipping) {
+            parts.push(p.shipping);
+          }
+
+          // Membership
+          if (p.membership) {
+            parts.push(`for ${p.membership} members`);
+          }
+
+          // Promo end date
+          if (p.promoEnds) {
+            parts.push(`sale ends ${p.promoEnds}`);
+          }
+
+          // Financing
+          if (p.financing) {
+            parts.push(`${p.financing}`);
+          }
+
+          // Condition
+          if (p.availability && (p.availability.toLowerCase().includes('refurbished') || p.availability.toLowerCase().includes('renewed'))) {
+            parts.push('(refurbished)');
+          } else if (p.title && (p.title.toLowerCase().includes('refurbished') || p.title.toLowerCase().includes('renewed'))) {
+            parts.push('(refurbished)');
+          }
+
+          // Extract and add specs
+          const title = p.title || '';
+          const storageMatch = title.match(/(\d+\s*GB|\d+\s*TB)/i);
+          if (storageMatch) {
+            parts.push(`${storageMatch[1].replace(/\s+/g, '')} storage`);
+          }
+
+          const screenMatch = title.match(/(\d+\.?\d*[\s-]?inch)/i);
+          if (screenMatch) {
+            parts.push(`${screenMatch[1]} screen`);
+          }
+
+          // Reviews/ratings
+          if (p.reviewCount) {
+            parts.push(`${p.reviewCount} reviews`);
+          } else if (p.rating) {
+            parts.push(`${p.rating}★ rating`);
+          }
+
+          activitiesList.push(parts.join(' '));
+        });
+      }
+
+      // Add clicked items as activities
+      if (clickedItems.length > 0) {
+        clickedItems.slice(0, 3).forEach(item => {
+          activitiesList.push(`User clicked: ${item.text}`);
+        });
+      }
+
+      // Add general activities if no products
+      if (activities.length > 0 && products.length === 0) {
+        activitiesList.push(...activities.slice(0, 3));
+      }
+
+      // Build the prompt in the expected format
+      let prompt = '';
+      if (activitiesList.length > 0) {
+        // Format: Activities: **<activity 1>**; **<activity 2>**; ...
+        const formattedActivities = activitiesList.map(a => `**${a}.**`).join('; ');
+        // If in study mode, rely on system prompt for the format without adding conflicting specifics
+        if (isStudyMode) {
+          prompt = `Activities: ${formattedActivities} | Render EXACTLY in the specified format.`;
+        } else {
+          prompt = `Activities: ${formattedActivities} | Render EXACTLY in the specified format: start with a single heading per category (e.g., "Shopping – <items>"), then 2–3 bullet facts, then Pros/Cons, and Cheaper item if 2+ priced items. No preface, no numbering, no bold, plain text only.`;
+        }
+      } else {
+        // Fallback
+        prompt = 'Activities: **No recent activity.** | Render in the specified format.';
+      }
+
+      console.log('[AI] Prompting (length:', prompt.length, ')...');
+      console.log('[AI] Full prompt:', prompt);
+      console.log('[AI] Prompt preview:', prompt.slice(0, 150) + '...');
+
+      // Execute prompt with timeout
+      const startPrompt = Date.now();
+      const resultPromise = session.prompt(prompt);
+      const result = await Promise.race([
+        resultPromise,
+        new Promise((_, reject) => setTimeout(() => reject(new Error('AI response timeout - model is busy. Try closing other tabs.')), 20000))
+      ]);
+      const promptElapsed = Date.now() - startPrompt;
+
+      console.log('[AI] Response received ✓ (length:', result?.length, 'time:', promptElapsed, 'ms)');
+
+      // Return full response - no truncation
+      return result?.trim() || null;
+
+    } finally {
+      // Always destroy session (don't await, it can hang)
+      const destroyStart = Date.now();
+      try {
+        // Don't await destroy - just fire and forget
+        if (session && typeof session.destroy === 'function') {
+          Promise.resolve(session.destroy()).then(() => {
+            console.log('[AI] Session destroyed ✓ (took', Date.now() - destroyStart, 'ms)');
+          }).catch(e => {
+            console.warn('[AI] Session cleanup failed:', e);
+          });
+        }
+      } catch (e) {
+        console.warn('[AI] Session cleanup exception:', e);
+      }
+      console.log('[AI] Exiting finally block at', Date.now() - startTime, 'ms');
+    }
+  }, { tabId }).then(result => {
+    console.log('[AI] runQueued resolved at', Date.now() - startTime, 'ms, returning result');
+    return result;
+  }).catch(err => {
+    console.error('[AI] runQueued rejected at', Date.now() - startTime, 'ms:', err.message);
+    throw err;
+  });
 }
+
 
 function formatOptimisticSummary(summary, sourceText) {
   const existing = (summary || '').trim();

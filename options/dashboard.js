@@ -1,5 +1,5 @@
 import { categoryLabel, normalizeCategory } from '../utils/categorize.js';
-import { generateFocusCoachSummary } from '../utils/ai.js';
+import { generateFocusCoachSummary, generateStudySummary } from '../utils/ai.js';
 import { cacheStreakValue } from '../utils/storage.js';
 
 const PRODUCTIVE = new Set(['learning', 'productivity', 'research', 'finance']);
@@ -145,6 +145,54 @@ async function renderFocusCoach(analytics, focusStats) {
   // AI summary is now triggered by button click, not automatic
 }
 
+function enforceFormat(text) {
+  if (!text) return text;
+  // Remove leading "Here are X factual statements…" lines
+  let cleaned = text.replace(/^Here are.*?:\s*/i, '').trim();
+  // Remove numbered list formatting if present (1. 2. 3.)
+  cleaned = cleaned.replace(/^\d+\.\s*\*\*?/gm, '• ');
+  // Remove bold markers
+  cleaned = cleaned.replace(/\*\*/g, '');
+
+  // Add line breaks before each * and convert * to •
+  cleaned = cleaned.replace(/\s*\*\s*/g, '\n• ');  // New line + convert * to •
+
+  // Add line breaks before Pros:/Cons:
+  cleaned = cleaned.replace(/\s+(Pros:|Cons:)/g, '\n$1');
+
+  // Add line break before "Cheaper item:"
+  cleaned = cleaned.replace(/\s+(Cheaper item:)/g, '\n$1');
+
+  // If it still doesn't start with a heading like "Shopping – ..."
+  if (!/^[A-Za-z][A-Za-z ]+ ?– /.test(cleaned)) {
+    // Try to extract just the content without preface
+    cleaned = cleaned.replace(/^.*?(\w+ ?– )/s, '$1').trim();
+  }
+
+  // Ensure "Cheaper item:" line (if present) is always the last line
+  try {
+    const lines = cleaned.split(/\n+/);
+    if (lines.length > 1) {
+      const header = lines[0];
+      const body = lines.slice(1);
+      const cheaper = [];
+      const rest = [];
+      for (const ln of body) {
+        const t = ln.trim();
+        if (/^•?\s*Cheaper item:/i.test(t)) cheaper.push(ln);
+        else rest.push(ln);
+      }
+      if (cheaper.length) {
+        cleaned = [header, ...rest, ...cheaper].filter(Boolean).join('\n');
+      }
+    }
+  } catch (_) {
+    // no-op if formatting fails
+  }
+
+  return cleaned;
+}
+
 async function generateAICoachSummary() {
   const summaryEl = document.getElementById('focus-summary');
   const coachBtn = document.getElementById('coach-ai-btn');
@@ -162,15 +210,47 @@ async function generateAICoachSummary() {
       browsingHistory: cachedBrowsingHistory
     };
 
-    const summary = await generateFocusCoachSummary(cachedAnalytics, context);
-    summaryEl.textContent = summary || 'Keep up the momentum 💪';
-    coachBtn.textContent = '✨ Refresh AI Summary';
+    // If analytics indicate Learning, switch to strict study mode; otherwise keep coach
+    const studyCats = new Set(['learning', 'study', 'education']);
+    const hasStudy = Object.keys(cachedAnalytics || {}).some(cat => studyCats.has(normalizeCategory(cat)));
+    const summary = hasStudy
+      ? (await generateStudySummary(context))
+      : (await generateFocusCoachSummary(cachedAnalytics, context));
+
+    if (summary) {
+      summaryEl.textContent = enforceFormat(summary);
+      coachBtn.textContent = '✨ Refresh AI Summary';
+    } else {
+      throw new Error('AI returned empty response');
+    }
   } catch (err) {
-    console.warn('Focus coach AI error', err);
-    summaryEl.textContent = err?.message === 'User activation required'
-      ? 'Click the button to generate AI summary (user interaction required)'
-      : 'Could not generate AI summary. Keep up the momentum 💪';
-    coachBtn.textContent = '✨ Get AI Coach Summary';
+    console.error('Focus coach AI error:', err);
+
+    // Show clear error message with actionable steps
+    let errorMsg = '❌ AI Error: ';
+
+    if (err?.message?.includes('not available')) {
+      errorMsg += 'Chrome AI is not available. Enable it at chrome://flags/#prompt-api-for-gemini-nano';
+    } else if (err?.message?.includes('downloading')) {
+      errorMsg += 'AI model is downloading. Check progress at chrome://components (Optimization Guide). Try again in 5 minutes.';
+    } else if (err?.message?.includes('Session creation timeout')) {
+      errorMsg += 'AI is initializing. Wait 30 seconds and try again. This is normal on first use.';
+    } else if (err?.message?.includes('response timeout')) {
+      errorMsg += 'AI is too busy. Close some tabs and try again.';
+    } else if (err?.message?.includes('AI_TIMEOUT')) {
+      errorMsg += 'AI timed out. This may be your first use (slow). Try again - should be faster.';
+    } else if (err?.message?.includes('User activation required')) {
+      errorMsg += 'Click the button again (Chrome security requires user interaction).';
+    } else if (err?.message?.includes('AI_BATTERY_LOW')) {
+      errorMsg += 'Battery is low. Plug in your device or charge above 25%.';
+    } else {
+      errorMsg += err.message || 'Unknown error. Check console for details.';
+    }
+
+    summaryEl.textContent = errorMsg;
+    summaryEl.style.color = '#ff6b6b';
+    summaryEl.style.fontSize = '0.9em';
+    coachBtn.textContent = '🔄 Try Again';
   } finally {
     coachBtn.disabled = false;
   }
