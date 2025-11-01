@@ -4,135 +4,61 @@
   <meta charset="utf-8" />
   <title>ActionSense Dashboard</title>
   <style>
-    :root {
-      font-family: 'Inter', system-ui, sans-serif;
-      color-scheme: light dark;
-      background: #f5f7fb;
-      color: #1c1f26;
+    :root{
+      color-scheme:dark;
+      --bg:#0b0f1a;
+      --bg-grad:radial-gradient(1400px 600px at 10% -10%, rgba(124,58,237,.22), rgba(11,15,26,0)),radial-gradient(900px 500px at 100% 0, rgba(6,182,212,.18), rgba(11,15,26,0));
+      --surface:rgba(20,24,35,.72);
+      --surface-2:rgba(28,33,48,.66);
+      --glass:rgba(148,163,184,.14);
+      --text:#e5e7eb;
+      --muted:#9aa3b2;
+      --brand-1:#7b61ff;--brand-2:#3bc9db;
     }
-    body {
-      margin: 0;
-      padding: 32px;
-      background: inherit;
-      color: inherit;
-    }
-    h1 {
-      margin-top: 0;
-    }
-    section {
-      background: #fff;
-      border-radius: 12px;
-      padding: 18px;
-      margin-bottom: 20px;
-      box-shadow: 0 12px 22px rgba(15, 23, 42, 0.08);
-    }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-    }
-    th, td {
-      text-align: left;
-      padding: 8px;
-      border-bottom: 1px solid rgba(148, 163, 184, 0.3);
-    }
-    .pill {
-      display: inline-flex;
-      align-items: center;
-      padding: 4px 8px;
-      border-radius: 9999px;
-      font-size: 12px;
-      background: #e0e7ff;
-      color: #3730a3;
-    }
+    *{box-sizing:border-box}
+    body{margin:0;padding:32px;min-height:100vh;background:var(--bg);color:var(--text);font-family:'Inter',system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;position:relative}
+    /* Ensure wallpaper sits behind all content */
+    body > *{position:relative;z-index:1}
+    .live-wallpaper{position:fixed;inset:0;z-index:0!important;pointer-events:none}
+    body::before{content:'';position:fixed;inset:0;pointer-events:none;background:var(--bg-grad);filter:saturate(105%);z-index:-1}
+    h1{margin:0 0 6px;background:linear-gradient(135deg,var(--brand-1),var(--brand-2));-webkit-background-clip:text;background-clip:text;color:transparent}
+    p{color:var(--muted)}
+    section{background:linear-gradient(180deg,var(--surface),var(--surface-2));border:1px solid var(--glass);border-radius:14px;padding:18px;margin-bottom:20px;box-shadow:0 10px 30px rgba(2,6,23,.6),0 0 0 1px var(--glass) inset}
+    .pill{display:inline-flex;align-items:center;padding:4px 8px;border-radius:9999px;font-size:12px;background:rgba(99,102,241,.18);color:#c7d2fe;border:1px solid rgba(99,102,241,.28)}
 
-    .focus-progress {
-      margin-top: 12px;
-      margin-bottom: 12px;
-    }
+    .focus-progress{margin:12px 0}
+    .progress-bar{position:relative;height:10px;background:rgba(79,70,229,.18);border-radius:999px;overflow:hidden;margin-bottom:8px;border:1px solid rgba(99,102,241,.25)}
+    .progress-bar span{display:block;height:100%;width:0;background:linear-gradient(135deg,var(--brand-1),var(--brand-2));transition:width .4s ease}
 
-    .progress-bar {
-      position: relative;
-      height: 10px;
-      background: rgba(79, 70, 229, 0.15);
-      border-radius: 999px;
-      overflow: hidden;
-      margin-bottom: 8px;
-    }
+    #focus-breakdown,#focus-trend,#focus-streak{margin:4px 0;color:#d1d5db}
 
-    .progress-bar span {
-      display: block;
-      height: 100%;
-      width: 0;
-      background: linear-gradient(135deg, #4c6ef5, #3bc9db);
-      transition: width 0.4s ease;
-    }
+    #focus-summary{white-space:pre-wrap;line-height:1.6;font-family:'SFMono-Regular',Menlo,Consolas,'Liberation Mono',monospace;max-height:560px;overflow-y:auto;padding:14px;background:rgba(17,24,39,.7);border-radius:12px;border:1px solid rgba(148,163,184,.22);color:#e2e8f0;box-shadow:inset 0 0 0 1px rgba(148,163,184,.06)}
 
-    #focus-breakdown,
-    #focus-trend,
-    #focus-streak {
-      margin: 4px 0;
-    }
+    #coach-ai-btn{margin-top:12px;padding:10px 16px;background:linear-gradient(135deg,var(--brand-1),var(--brand-2));color:#0b1020;border:none;border-radius:12px;cursor:pointer;font-size:14px;font-weight:800;letter-spacing:.2px;box-shadow:0 10px 28px rgba(123,97,255,.28);transition:transform .18s ease,filter .2s ease,box-shadow .2s ease}
+    #coach-ai-btn:hover{transform:translateY(-1px);filter:brightness(1.05)}
+    #coach-ai-btn:active{transform:translateY(0);filter:brightness(.98)}
+    #coach-ai-btn:disabled{opacity:.65;filter:grayscale(.2);cursor:wait}
 
-    #focus-summary {
-      white-space: pre-wrap;
-      line-height: 1.6;
-      font-family: monospace;
-      max-height: 500px;
-      overflow-y: auto;
-      padding: 12px;
-      background: #f8f9fa;
-      border-radius: 8px;
-      border: 1px solid #e9ecef;
-    }
+    .pulse{animation:pulse 1.2s ease}
+    @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(123,97,255,.45)}100%{box-shadow:0 0 0 12px rgba(123,97,255,0)}}
 
-    .pulse {
-      animation: pulse 1.2s ease;
-    }
-
-    @keyframes pulse {
-      0% { box-shadow: 0 0 0 0 rgba(76, 110, 245, 0.45); }
-      100% { box-shadow: 0 0 0 12px rgba(76, 110, 245, 0); }
-    }
+    /* Scrollbars */
+    *::-webkit-scrollbar{height:10px;width:10px}
+    *::-webkit-scrollbar-track{background:rgba(148,163,184,.08);border-radius:999px}
+    *::-webkit-scrollbar-thumb{background:rgba(148,163,184,.3);border-radius:999px}
+    *::-webkit-scrollbar-thumb:hover{background:rgba(148,163,184,.45)}
   </style>
 </head>
 <body>
-  <h1>ActionSense Dashboard</h1>
+  <h1>Dashboard</h1>
   <p>Insights from your recent browsing activity.</p>
 
-  <section>
-    <h2>Category Breakdown</h2>
-    <table id="category-table">
-      <thead>
-        <tr>
-          <th>Category</th>
-          <th>Visits</th>
-          <th>Focus</th>
-        </tr>
-      </thead>
-      <tbody></tbody>
-    </table>
-  </section>
+  
 
   <section>
-    <h2>Focus Coach</h2>
-    <div class="focus-progress">
-      <div class="progress-bar"><span id="focus-bar"></span></div>
-      <p id="focus-breakdown">🧠 Focus 0% | 🎮 Distraction 0%</p>
-      <p id="focus-trend"></p>
-      <p id="focus-streak"></p>
-    </div>
-    <p id="focus-summary">Keep up the momentum 💪</p>
-    <button id="coach-ai-btn" style="margin-top: 12px; padding: 8px 16px; background: #4c6ef5; color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 14px;">✨ Get AI Coach Summary</button>
-  </section>
-
-  <section>
-    <h2>Recent Highlights</h2>
-    <ul id="history"></ul>
-  </section>
-
-  <section>
-    <h2>Latest Captures</h2>
-    <ul id="pages"></ul>
+    <h2>Summary</h2>
+    <p id="focus-summary">Click the button below to generate a summary of your browsing activity.</p>
+    <button id="coach-ai-btn" style="margin-top: 12px; padding: 8px 16px; background: #4c6ef5; color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 14px;">✨ Generate Summary</button>
   </section>
 
   <script type="module" src="dashboard.js"></script>

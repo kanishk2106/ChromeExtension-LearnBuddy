@@ -1,4 +1,5 @@
 import { categoryLabel, normalizeCategory } from '../utils/categorize.js';
+import { initLiveWallpaper } from '../utils/wallpaper.js';
 import { generateFocusCoachSummary, generateStudySummary } from '../utils/ai.js';
 import { cacheStreakValue } from '../utils/storage.js';
 
@@ -10,6 +11,15 @@ let cachedFocusStats = {};
 let cachedBrowsingHistory = [];
 
 document.addEventListener('DOMContentLoaded', async () => {
+  // Initialize live wallpaper (UI only)
+  initLiveWallpaper({
+    nodes: 90,                  // more points on screen
+    maxDist: 150,
+    speed: 0.65,               // significantly faster motion
+    dotColor: 'rgba(255, 110, 24, 0.8)',   // fire/ember color for points
+    lineColor: 'rgba(255, 110, 24, 0.25)', // warm connective glow
+    gridColor: 'rgba(255, 160, 64, 0.06)'  // subtle warm grid
+  });
   const data = await chrome.runtime.sendMessage({ type: 'GET_DASHBOARD_DATA' }).catch(() => null);
   if (!data) return;
   cachedAnalytics = data.analytics || {};
@@ -31,6 +41,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 function renderCategories(analytics) {
   const tbody = document.querySelector('#category-table tbody');
+  if (!tbody) return; // Category table removed from dashboard
   tbody.innerHTML = '';
   const entries = Object.entries(analytics);
   if (!entries.length) {
@@ -75,6 +86,7 @@ function focusBadge(category) {
 
 function renderHistory(history) {
   const list = document.getElementById('history');
+  if (!list) return; // Gracefully handle pages lacking a history section
   list.innerHTML = '';
   if (!history.length) {
     const li = document.createElement('li');
@@ -92,6 +104,7 @@ function renderHistory(history) {
 
 function renderPages(pages) {
   const list = document.getElementById('pages');
+  if (!list) return; // Gracefully handle pages lacking a pages section
   list.innerHTML = '';
   if (!pages.length) {
     const li = document.createElement('li');

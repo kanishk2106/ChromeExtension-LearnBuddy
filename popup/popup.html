@@ -9,9 +9,7 @@
   <header class="header">
     <h1>ActionSense</h1>
     <div class="header-actions">
-      <button id="refresh">Refresh</button>
       <button id="open-dashboard">Dashboard</button>
-      <button id="enhance-all">Enhance Last 20</button>
     </div>
   </header>
 
@@ -27,40 +25,10 @@
       <button id="ai-run" class="ai-run">Try Chrome AI now</button>
       <pre id="ai-output" class="ai-output" hidden></pre>
     </div>
-    <button id="refresh-ai" class="ai-refresh" hidden>Page changed — Refresh Chrome AI?</button>
     <p id="tab-summary" class="summary" hidden></p>
-    <div class="collapsible-block">
-      <button class="section-toggle" data-target="actions-section" aria-expanded="false">
-        <span>Suggested Actions</span>
-        <span class="chevron">▸</span>
-      </button>
-      <div id="actions-section" class="collapsible" aria-hidden="true">
-        <ul id="actions" class="actions"></ul>
-      </div>
-    </div>
-
-    <div class="collapsible-block">
-      <button class="section-toggle" data-target="products-section" aria-expanded="false">
-        <span>Product Insights</span>
-        <span class="chevron">▸</span>
-      </button>
-      <div id="products-section" class="collapsible" aria-hidden="true">
-        <div id="best-deal" class="insight" hidden></div>
-        <ul id="product-insights" class="insights" hidden></ul>
-        <div id="product-advice" class="product-advice" hidden></div>
-      </div>
-    </div>
   </section>
 
-  <section id="analytics" class="card">
-    <h2>Focus Insights</h2>
-    <ul id="analytics-list" class="analytics"></ul>
-  </section>
-
-  <section id="history" class="card" hidden>
-    <h2>Recent Highlights</h2>
-    <ul id="history-list" class="history"></ul>
-  </section>
+  
 
   <script type="module" src="popup.js"></script>
 </body>

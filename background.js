@@ -18,6 +18,7 @@ import {
   setModelVersion
 } from './utils/storage.js';
 import { getCurrentModelVersion } from './utils/ai.js';
+import { groupSignatureFor } from './utils/grouping.js';
 
 const TEXT_CLAMP = 2_000;
 const CLEANUP_ALARM = 'ACTION_SENSE_CLEANUP';
@@ -219,6 +220,9 @@ async function handlePageInfo(data = {}, tab = null) {
 
   await updateBadge(tabId, merged.categoryLabel);
 
+  // Best-effort auto-grouping based on category + title signature
+  try { await autoOrganizeTabByCategory(tabId, merged); } catch (_) {}
+
   chrome.runtime.sendMessage({ type: 'PAGE_INFO_UPDATED', tabId, category: merged.category }).catch(() => {});
 }
 
@@ -291,6 +295,9 @@ async function applyAIEnrichment(tabId, ai = {}) {
   await savePageSnapshot(tabId, updated);
 
   await updateBadge(tabId, updated.categoryLabel);
+
+  // Best-effort auto-grouping after AI changes category
+  try { await autoOrganizeTabByCategory(tabId, updated); } catch (_) {}
 
   chrome.runtime.sendMessage({ type: 'PAGE_INFO_UPDATED', tabId, category: updated.category }).catch(() => {});
 
@@ -439,4 +446,188 @@ async function runCleanup() {
   } catch (error) {
     console.error('Cleanup failure', error);
   }
+}
+
+// ===== Auto-grouping helpers and routine =====
+const groupMetadata = new Map(); // groupId -> { windowId, category, signature }
+
+const CATEGORY_GROUP_CONFIG = {
+  learning: { color: 'blue' },
+  productivity: { color: 'green' },
+  research: { color: 'purple' },
+  shopping: { color: 'yellow' },
+  finance: { color: 'red' },
+  entertainment: { color: 'orange' },
+  social: { color: 'cyan' },
+  other: { color: 'grey' }
+};
+
+function isRestorableUrl(url = '') {
+  if (!url) return false;
+  return !(
+    url.startsWith('chrome://') ||
+    url.startsWith('edge://') ||
+    url.startsWith('about:') ||
+    url.startsWith('view-source:') ||
+    url.startsWith('https://chrome.google.com/')
+  );
+}
+
+function buildCategoryGroupTitle(category, config = {}) {
+  try { return categoryLabel(category); } catch { return String(category || 'Group'); }
+}
+
+async function ensureGroupMetadata(groupId, windowId = null) {
+  if (!Number.isInteger(groupId) || groupId < 0) return null;
+  const meta = groupMetadata.get(groupId) || null;
+  if (meta) return meta;
+  try {
+    const grp = await chrome.tabGroups.get(groupId);
+    if (!grp) return null;
+    const seeded = { windowId: windowId ?? grp.windowId ?? null, category: null, signature: null };
+    groupMetadata.set(groupId, seeded);
+    return seeded;
+  } catch {
+    return null;
+  }
+}
+
+function rememberGroupCategory(groupId, meta = {}) {
+  if (!Number.isInteger(groupId) || groupId < 0) return;
+  const prev = groupMetadata.get(groupId) || {};
+  groupMetadata.set(groupId, { ...prev, ...meta });
+}
+
+async function ensureSavedGroupAssociation(info = {}) {
+  try {
+    const key = 'actionSense.groupAssociations';
+    const existing = await chrome.storage.local.get(key).catch(() => ({}));
+    const map = existing[key] || {};
+    const id = info.groupId != null ? String(info.groupId) : null;
+    if (!id) return;
+    map[id] = {
+      windowId: info.windowId,
+      category: info.category,
+      signature: info.signature,
+      title: info.title,
+      color: info.color,
+      tabCount: Array.isArray(info.groupTabs) ? info.groupTabs.length : (info.tabCount || 0)
+    };
+    await chrome.storage.local.set({ [key]: map });
+  } catch {}
+}
+
+async function findBestGroupForCategory(windowId, category, signature, excludeGroupId = null) {
+  if (!Number.isInteger(windowId)) return null;
+  try {
+    const groups = await chrome.tabGroups.query({ windowId });
+    for (const grp of groups) {
+      if (!Number.isInteger(grp.id) || grp.id < 0) continue;
+      if (excludeGroupId != null && grp.id === excludeGroupId) continue;
+      const meta = await ensureGroupMetadata(grp.id, windowId);
+      if (!meta) continue;
+      if (meta.category === category && meta.signature === signature) {
+        return grp.id;
+      }
+    }
+  } catch {}
+  return null;
+}
+
+async function autoOrganizeTabByCategory(tabId, snapshot = {}) {
+  if (!tabId || !snapshot) return;
+  const category = normalizeCategory(snapshot.category);
+  if (!category || category === 'other') return;
+
+  let tab;
+  try {
+    tab = await chrome.tabs.get(tabId);
+  } catch {
+    return;
+  }
+  if (!tab?.url || !isRestorableUrl(tab.url)) return;
+
+  const windowId = Number.isInteger(tab.windowId) ? tab.windowId : null;
+  const groupingKey = groupSignatureFor({
+    category: snapshot.category,
+    title: snapshot.title || tab.title || '',
+    url: tab.url || snapshot.url || ''
+  });
+  if (!groupingKey) return;
+
+  let targetGroupId = null;
+  let targetMeta = null;
+
+  if (Number.isInteger(tab.groupId) && tab.groupId >= 0) {
+    const currentMeta = await ensureGroupMetadata(tab.groupId, windowId);
+    if (currentMeta?.category === category && currentMeta.signature === groupingKey) {
+      targetGroupId = tab.groupId;
+      targetMeta = currentMeta;
+    }
+  }
+
+  if (targetGroupId == null && Number.isInteger(windowId)) {
+    const matched = await findBestGroupForCategory(windowId, category, groupingKey, tab.groupId);
+    if (matched != null) {
+      targetGroupId = matched;
+      targetMeta = await ensureGroupMetadata(targetGroupId, windowId);
+      if (targetMeta?.signature !== groupingKey) {
+        targetGroupId = null;
+        targetMeta = null;
+      }
+    }
+  }
+
+  if (targetGroupId == null) {
+    try {
+      const groupOptions = { tabIds: [tabId] };
+      if (Number.isInteger(windowId)) groupOptions.createProperties = { windowId };
+      targetGroupId = await chrome.tabs.group(groupOptions);
+    } catch (error) {
+      console.warn('autoOrganizeTabByCategory group create failed', error);
+      return;
+    }
+  } else if (tab.groupId !== targetGroupId) {
+    try {
+      await chrome.tabs.group({ groupId: targetGroupId, tabIds: [tabId] });
+    } catch (error) {
+      console.warn('autoOrganizeTabByCategory assign failed', error);
+    }
+  }
+
+  if (!Number.isInteger(targetGroupId)) return;
+
+  const resolvedWindowId = Number.isInteger(windowId) ? windowId : tab.windowId;
+  const config = CATEGORY_GROUP_CONFIG[category] || CATEGORY_GROUP_CONFIG.other;
+
+  let groupTabs = [];
+  try {
+    groupTabs = await chrome.tabs.query({ groupId: targetGroupId });
+  } catch (error) {
+    console.warn('autoOrganizeTabByCategory query failed', error);
+  }
+
+  const restorableTabs = groupTabs.filter(t => isRestorableUrl(t.url || ''));
+  const derivedTitle = buildCategoryGroupTitle(category, config);
+
+  try { await chrome.tabGroups.update(targetGroupId, { title: derivedTitle, color: config.color }); } catch {}
+
+  rememberGroupCategory(targetGroupId, {
+    windowId: resolvedWindowId,
+    category,
+    tabCount: groupTabs.length,
+    signature: groupingKey
+  });
+
+  await ensureSavedGroupAssociation({
+    groupId: targetGroupId,
+    windowId: resolvedWindowId,
+    category,
+    signature: groupingKey,
+    title: derivedTitle,
+    color: config.color,
+    restorableTabs,
+    groupTabs,
+    snapshot
+  });
 }

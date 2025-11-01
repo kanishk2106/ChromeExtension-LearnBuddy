@@ -5,6 +5,7 @@ import {
   classificationSystemPrompt,
   actionsSystemPrompt,
   productAdvisorPrompt,
+  productComparisonPrompt,
   focusCoachPrompt,
   studyCoachPrompt,
   oneLinerPrompt,
@@ -84,8 +85,101 @@ export async function generateStudySummary(context = {}) {
   if (typeof LanguageModel === 'undefined') {
     throw new Error('Chrome AI (LanguageModel API) is not available. Please use Chrome 127+ or enable chrome://flags/#prompt-api-for-gemini-nano');
   }
-  const topSites = topSitesFromHistory(context?.browsingHistory || [], 3);
-  const formattedActivities = context?.formattedActivities || buildFormattedActivitiesFromHistory(context?.browsingHistory || []);
+  const browsingHistory = context?.browsingHistory || [];
+
+  // Check if we have shopping products to compare
+  const hasProducts = browsingHistory.some(page =>
+    page.signals?.products && page.signals.products.length > 0
+  );
+
+  // If we have products, use product comparison prompt
+  if (hasProducts) {
+    const products = [];
+    browsingHistory.forEach(page => {
+      if (page.signals?.products) {
+        page.signals.products.forEach(p => {
+          products.push({
+            ...p,
+            retailer: new URL(page.url).hostname.replace('www.', ''),
+            pageUrl: page.url
+          });
+        });
+      }
+    });
+
+    // Build activities string with ONLY product-specific data: price, domain, product details
+    // Do NOT include browsing history, highlights, or non-product information
+    const productActivities = products.map(p => {
+      const parts = [];
+
+      // Product name/title
+      parts.push(p.title || 'Product');
+
+      // Website domain (retailer)
+      parts.push(`at ${p.retailer}`);
+
+      // Price (CRITICAL)
+      if (p.price) {
+        parts.push(`priced at ${p.currency || '$'}${p.price}`);
+        if (p.originalPrice && parseFloat(p.originalPrice) > parseFloat(p.price)) {
+          parts.push(`(was ${p.currency || '$'}${p.originalPrice})`);
+        }
+      }
+
+      // Product details: condition, specs, features
+      if (p.condition) parts.push(`${p.condition} condition`);
+      if (p.storage) parts.push(`${p.storage} storage`);
+      if (p.color) parts.push(`${p.color} color`);
+      if (p.size) parts.push(`size ${p.size}`);
+
+      // Additional valuable info
+      if (p.financing) parts.push(`${p.financing}`);
+      if (p.shipping) parts.push(p.shipping);
+      if (p.warranty) parts.push(`${p.warranty} warranty`);
+      if (p.rating) parts.push(`${p.rating}★ rating`);
+      if (p.reviewCount) parts.push(`${p.reviewCount} reviews`);
+
+      return parts.join(' ');
+    }).map(a => `**${a}.**`).join('; ');
+
+    const userPrompt = `Activities: ${productActivities}`;
+
+    const session = await LanguageModel.create({
+      systemPrompt: productComparisonPrompt(),
+      temperature: 0.3,
+      topK: 10,
+      maxOutputTokens: 600,
+      expectedInputs: [{ type: 'text', languages: ['en'] }],
+      expectedOutputs: [{ type: 'text', languages: ['en'] }]
+    });
+
+    try {
+      const out = await session.prompt(userPrompt);
+      let summary = (out || '').trim();
+
+      console.log('[AI] Product comparison - products:', products.length);
+      console.log('[AI] Summary includes "Cheaper item:"?', summary.includes('Cheaper item:'));
+
+      // Ensure "Cheaper item:" line is present for 2+ products
+      if (products.length >= 2 && !summary.includes('Cheaper item:')) {
+        console.log('[AI] Adding "Cheaper item:" line via post-processing');
+        summary = ensureCheaperItemLine(summary, products);
+      }
+
+      // Append website URLs (only product pages, not browsing history)
+      if (summary && products.length > 0) {
+        summary = appendProductLinks(summary, products);
+      }
+
+      return summary;
+    } finally {
+      try { session.destroy?.(); } catch {}
+    }
+  }
+
+  // Otherwise use study prompt
+  const topSites = topSitesFromHistory(browsingHistory, 3);
+  const formattedActivities = context?.formattedActivities || buildFormattedActivitiesFromHistory(browsingHistory);
   const userPrompt = buildStudyUserPrompt({ formattedActivities, topSites });
 
   const session = await LanguageModel.create({
@@ -98,10 +192,84 @@ export async function generateStudySummary(context = {}) {
   });
   try {
     const out = await session.prompt(userPrompt);
-    return (out || '').trim();
+    let summary = (out || '').trim();
+
+    // Append website URLs to the summary
+    if (summary && browsingHistory.length > 0) {
+      summary = appendWebsiteLinks(summary, browsingHistory);
+    }
+
+    return summary;
   } finally {
     try { session.destroy?.(); } catch {}
   }
+}
+
+function ensureCheaperItemLine(summary, products) {
+  // Sort products by price (lowest to highest)
+  const priced = products.filter(p => p.price && !isNaN(parseFloat(p.price)));
+
+  if (priced.length < 2) return summary;
+
+  priced.sort((a, b) => parseFloat(a.price) - parseFloat(b.price));
+
+  const cheapest = priced[0];
+  const mostExpensive = priced[priced.length - 1];
+
+  // Build the cheaper item line
+  const cheaperLine = `\n\nCheaper item: ${cheapest.title || 'Product'} at ${cheapest.retailer || 'unknown'} for ${cheapest.currency || '$'}${parseFloat(cheapest.price).toFixed(2)} (vs ${mostExpensive.currency || '$'}${parseFloat(mostExpensive.price).toFixed(2)} at ${mostExpensive.retailer || 'unknown'})`;
+
+  return summary + cheaperLine;
+}
+
+function appendProductLinks(summary, products) {
+  // Extract unique product page URLs (domain + product title)
+  const uniqueUrls = new Map();
+
+  products.forEach(p => {
+    if (p.pageUrl && !uniqueUrls.has(p.pageUrl)) {
+      uniqueUrls.set(p.pageUrl, {
+        title: p.title || 'Product',
+        retailer: p.retailer,
+        url: p.pageUrl
+      });
+    }
+  });
+
+  if (uniqueUrls.size === 0) return summary;
+
+  // Add product links section at the end
+  let result = summary + '\n\n---\n\n**Product Links:**';
+
+  uniqueUrls.forEach(({ title, retailer, url }) => {
+    const shortTitle = title.slice(0, 50) + (title.length > 50 ? '...' : '');
+    result += `\n• ${shortTitle} (${retailer})\n  ${url}`;
+  });
+
+  return result;
+}
+
+function appendWebsiteLinks(summary, browsingHistory) {
+  // Extract unique URLs from browsing history
+  const urls = browsingHistory
+    .filter(page => page.url)
+    .map(page => ({
+      title: page.activity || page.title || 'Page',
+      url: page.url,
+      category: page.category
+    }));
+
+  if (urls.length === 0) return summary;
+
+  // Add URLs section at the end
+  let result = summary + '\n\n---\n\n**Links:**';
+
+  urls.forEach(({ title, url, category }) => {
+    const shortTitle = title.slice(0, 60) + (title.length > 60 ? '...' : '');
+    result += `\n• ${shortTitle}\n  ${url}`;
+  });
+
+  return result;
 }
 
 export async function summarizeWithAI(text, {
